@@ -1,0 +1,184 @@
+---
+title: "Analysis of Storm Impact on Health and Economy"
+author: "Robert Wexler"
+date: "April 17, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Synopsis
+
+The National Oceanic and Atmospheric Administration (NOAA) comiles a database containing information about storms over the last 70 years. This information includes the location, date, time, event, their magnitudes, and the health and economic effects resulting from them. In this report, I analyze the impact of these storms on public health and the economy. The former is measured in terms of injuries, fatalities, and their sum. The latter is quantified by the damages they incur in USD. Additionally, I compare these data by season and region and find significant variations in the identity and consequences of the most devasting storm types. I perform my analysis only on storm data originating from the 50 US states and which complies with NOAA logging standards.
+
+## Data Processing
+
+I begin by loading all the necessary libraries for the data analysis.
+
+```{r}
+library(lubridate)
+library(gridExtra)
+library(grid)
+library(maps)
+library(RColorBrewer)
+```
+
+Then, using the url given on the course website (show in the code chunck below), I download the file and read it to a data frame.
+
+```{r, cache=TRUE}
+Url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+download.file(Url, "noaa.csv.bz2")
+StormData <- read.csv("noaa.csv.bz2")
+```
+
+After getting the data, I clean it using the following steps. First, I trim the data to include only column variables relevant to my analysis, i.e. dates, locations, weather event types, and health/economic harm done by them.
+
+```{r}
+TrimStormData <- StormData[,c(2,7,8,23,24,25:28)]
+```
+
+Next, I reformat the date to "MM-DD-YYYY HH:MM:SS" using lubridate.
+
+```{r}
+TrimStormData$BGN_DATE <- mdy_hms(TrimStormData$BGN_DATE)
+```
+
+The storm data contains a number of unclear US state abbreviations. I choose to look at data only for the 50 US states.
+
+```{r}
+UsStormData <- TrimStormData[TrimStormData$STATE %in% state.abb,]
+```
+
+There are also many mispelled and combined events types. I choose those that match the weather event types presented in the NOAA Storm Data Documentation (https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf).
+
+```{r}
+UsStormData$EVTYPE <- toupper(UsStormData$EVTYPE)
+keepEvents <- c("ASTRONOMICAL LOW TIDE", "AVALANCHE", "BLIZZARD", "COASTAL FLOOD", "COLD/WIND CHILL", "DEBRIS FLOW", "DENSE FOG", "DENSE SMOKE", "DROUGHT", "DUST DEVIL", "DUST STORM", "EXCESSIVE HEAT", "EXTREME COLD/WIND CHILL", "FLASH FLOOD", "FLOOD", "FREEZING FOG", "FROST/FREEZE", "FUNNEL CLOUD", "HAIL","HEAT", "HEAVY RAIN", "HEAVY SNOW", "HIGH SURF", "HIGH WIND", "HURRICANE/TYPHOON", "ICE STORM", "LAKESHORE FLOOD", "LAKE-EFFECT SNOW", "LIGHTNING", "MARINE HAIL", "MARINE HIGH WIND", "MARINE STRONG WIND", "MARINE THUNDERSTORM WIND", "RIP CURRENT", "SEICHE", "SLEET", "STORM TIDE", "STRONG WIND", "THUNDERSTORM WIND", "TORNADO", "TROPICAL DEPRESSION", "TROPICAL STORM", "TSUNAMI", "VOLCANIC ASH", "WATERSPOUT", "WILDFIRE", "WINTER STORM", "WINTER WEATHER")
+EventStormData <- UsStormData[UsStormData$EVTYPE %in% keepEvents,]
+```
+
+I found erroneous and confusing lables for the property and crop damage exponents in the storm data (see the contents of "badSybmols" below for an example of these non-standard entries). Although there is published work describing how to accurately redefine these mislabeled observations (https://rpubs.com/cgwhitehead/noaadata), I elect to include only those exponents with the accepted alphabetic naming scheme (K, M, B for one thousand, million, and billion respectively) as listed in the documentation.
+
+```{r}
+badSymbols <- c("","-","?","+","H","0","1","2","3","4","5","6","7","8")
+ExpStormData <- EventStormData[!(EventStormData$PROPDMGEXP %in% badSymbols | EventStormData$CROPDMGEXP %in% badSymbols),]
+levels(ExpStormData$PROPDMGEXP)[levels(ExpStormData$PROPDMGEXP) == "m"] <- "M"
+levels(ExpStormData$CROPDMGEXP)[levels(ExpStormData$CROPDMGEXP) == "k"] <- "K"
+```
+
+A flood was reported in California on January 1, 2006 that, according to the data set, incurred 115 billion dollars of damages. I investigated this particular storm and discovered a government report (http://pubs.usgs.gov/of/2006/1182/pdf/ofr2006-1182.pdf), which provided an estimate for the total damages in the hundreds of millions of USD. Given this information, I believe the exponent was mistakenly labeled as "B" instead of "M." I correct this by dividing the property damage by 1000.
+
+```{r}
+ExpStormData$PROPDMG[ExpStormData$PROPDMGEXP=="B" & ExpStormData$PROPDMG>110] <- 
+                as.numeric(as.character(ExpStormData$PROPDMG[ExpStormData$PROPDMGEXP=="B" & ExpStormData$PROPDMG>110]))/1000
+```
+
+Then, I convert alphabetical exponent lables to numeric powers of ten.
+
+```{r}
+levels(ExpStormData$PROPDMGEXP)[levels(ExpStormData$PROPDMGEXP) == "K"] <- 3
+levels(ExpStormData$PROPDMGEXP)[levels(ExpStormData$PROPDMGEXP) == "M"] <- 6
+levels(ExpStormData$PROPDMGEXP)[levels(ExpStormData$PROPDMGEXP) == "B"] <- 9
+levels(ExpStormData$CROPDMGEXP)[levels(ExpStormData$CROPDMGEXP) == "K"] <- 3
+levels(ExpStormData$CROPDMGEXP)[levels(ExpStormData$CROPDMGEXP) == "M"] <- 6
+levels(ExpStormData$CROPDMGEXP)[levels(ExpStormData$CROPDMGEXP) == "B"] <- 9
+```
+
+To simplify my analysis, I combine property and crop damages into a total damages variable.
+
+```{r}
+ExpStormData$TOTALPDMG <- as.numeric(as.character(ExpStormData$PROPDMG))*10.0^as.numeric(as.character(ExpStormData$PROPDMGEXP))
+ExpStormData$TOTALCDMG <- as.numeric(as.character(ExpStormData$CROPDMG))*10.0^as.numeric(as.character(ExpStormData$CROPDMGEXP))
+ExpStormData$TOTALDMG <- ExpStormData$TOTALPDMG + ExpStormData$TOTALCDMG
+```
+
+I roughly determine the season in which the event took place and find the region to which a particular state and timezone belong.
+
+```{r}
+ExpStormData$SEASON <- factor(quarter(ExpStormData$BGN_DATE), levels = 1:4, labels=c("WINTER","SPRING","SUMMER","FALL"))
+ExpStormData$REGION <- state.region[match(as.character(ExpStormData$STATE),state.abb)]
+```
+
+In addition, I add the fatalities and injuries for each event to find the total number of people harmed.
+
+```{r}
+ExpStormData$HARMED <- ExpStormData$FATALITIES + ExpStormData$INJURIES
+```
+
+Finally, I keep only the variables directly relevant to this project and reorder them.
+
+```{r}
+KeepStormData <- ExpStormData[,c(2,13:14,3:5,15,10:12,7)]
+```
+
+## Results
+
+First, I explore which types of events are most harmful with respect to population health. To do so, I calculate the total harm done by weather event type, season, and region and plot the top 5 most harmful natural disasters.
+
+```{r}
+HealthHarmSeason <- with(KeepStormData, aggregate(x = HARMED, by = list(EVTYPE,SEASON), FUN = sum, na.rm = TRUE))
+HealthHarmRegion <- with(KeepStormData, aggregate(x = HARMED, by = list(EVTYPE,REGION), FUN = sum, na.rm = TRUE))
+names(HealthHarmSeason) <- c("EVTYPE","SEASON","HARMED")
+names(HealthHarmRegion) <- c("EVTYPE","REGION","HARMED")
+SortHealthHarmSeason <- HealthHarmSeason[with(HealthHarmSeason, order(-HealthHarmSeason$HARMED)),]
+SortHealthHarmRegion <- HealthHarmRegion[with(HealthHarmRegion, order(-HealthHarmRegion$HARMED)),]
+```
+```{r, fig.height=10, fig.width=9, fig.cap="Top 5 Most Harmful Natural Disasters by Weather Event Type, Season, and Region of the US"}
+grid.arrange(
+textGrob("By Season"), textGrob("By Region"),
+tableGrob(SortHealthHarmSeason[SortHealthHarmSeason$SEASON=="WINTER",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "People Harmed")),
+tableGrob(SortHealthHarmRegion[SortHealthHarmRegion$REGION=="Northeast",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "People Harmed")),
+tableGrob(SortHealthHarmSeason[SortHealthHarmSeason$SEASON=="SPRING",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "People Harmed")),
+tableGrob(SortHealthHarmRegion[SortHealthHarmRegion$REGION=="South",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "People Harmed")),
+tableGrob(SortHealthHarmSeason[SortHealthHarmSeason$SEASON=="SUMMER",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "People Harmed")),
+tableGrob(SortHealthHarmRegion[SortHealthHarmRegion$REGION=="North Central",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "People Harmed")),
+tableGrob(SortHealthHarmSeason[SortHealthHarmSeason$SEASON=="FALL",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "People Harmed")),
+tableGrob(SortHealthHarmRegion[SortHealthHarmRegion$REGION=="West",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "People Harmed")), nrow=5, ncol=2)
+```
+
+This set of tables shows that the weather events most harmul to public health depend strongly on the season and region of the US in which they occur. For example, tornados are the most devstating natural disaster in the winter and spring months, but heat and floods are more harmul in the summer and fall respectively. Tornados are also on top of the list for the northeast, south, and north central US. Only in the West are wildfires more injurious then tornados. This analysis also shows that harmful storms are more frequent in the spring and fall by season and in the south and north central by region. Therefore, first aid and medical allocations should be favored during these seasons and in these regions.
+
+Next, I investigated which types of events have the greatest economic consequences. This was achieved by calculating the total economic harm done by weather event type, season, and region, and plotting tables of top 5 most financially detrimental events. Note that the economic harm done is reported in billions of USD.
+
+```{r}
+EconHarmSeason <- with(KeepStormData, aggregate(x = TOTALDMG, by = list(EVTYPE,SEASON), FUN = sum, na.rm = TRUE))
+EconHarmRegion <- with(KeepStormData, aggregate(x = TOTALDMG, by = list(EVTYPE,REGION), FUN = sum, na.rm = TRUE))
+names(EconHarmSeason) <- c("EVTYPE","SEASON","TOTALDMG")
+names(EconHarmRegion) <- c("EVTYPE","REGION","TOTALDMG")
+SortEconHarmSeason <- EconHarmSeason[with(EconHarmSeason, order(-EconHarmSeason$TOTALDMG)),]
+SortEconHarmRegion <- EconHarmRegion[with(EconHarmRegion, order(-EconHarmRegion$TOTALDMG)),]
+SortEconHarmSeason$TOTALDMG <- as.numeric(SortEconHarmSeason$TOTALDMG)/1E9
+SortEconHarmRegion$TOTALDMG <- as.numeric(SortEconHarmRegion$TOTALDMG)/1E9
+```
+```{r, fig.height=10, fig.width=9, fig.cap="Top 5 Most Financially Devstating Storms by Type, Season, and Region of the US"}
+grid.arrange(
+textGrob("By Season"), textGrob("By Region"),
+tableGrob(SortEconHarmSeason[SortEconHarmSeason$SEASON=="WINTER",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "Total Damages")),
+tableGrob(SortEconHarmRegion[SortEconHarmRegion$REGION=="Northeast",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "Total Damages")),
+tableGrob(SortEconHarmSeason[SortEconHarmSeason$SEASON=="SPRING",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "Total Damages")),
+tableGrob(SortEconHarmRegion[SortEconHarmRegion$REGION=="South",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "Total Damages")),
+tableGrob(SortEconHarmSeason[SortEconHarmSeason$SEASON=="SUMMER",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "Total Damages")),
+tableGrob(SortEconHarmRegion[SortEconHarmRegion$REGION=="North Central",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "Total Damages")),
+tableGrob(SortEconHarmSeason[SortEconHarmSeason$SEASON=="FALL",][1:5,1:3], rows = NULL, cols = c("Event Type", "Season", "Total Damages")),
+tableGrob(SortEconHarmRegion[SortEconHarmRegion$REGION=="West",][1:5,1:3], rows = NULL, cols = c("Event Type", "Region", "Total Damages")),
+nrow=5,ncol=2)
+```
+
+This matrix of tables reveals that the most economically challenging weather events vary considerably between seasons and regions. In addition, it highlights that the events which incur large monetary damages do not necessarily harm the public health. A good example of this is found during the winter. The deadliest type of winter storm is the tornado harming 1,961 people. On the other hand, ice storms cause more economic harm, accruing over five billion dollars of total damages to both property and crops. It is important to note that the number of people harmed and the magnitude of financial expensives is only relevant for comparison within this investigation. Others may choose to include more or less data in their analysis thus varying these numbers, perhaps significantly. The qualitative trends, however, should be in good agreement. The most costly season is summer when hurricanes and typhoons have accumulated almost 30 billion dollars in total damages. It is also clear from the data tables that the South has shouldered the entirety of these costs. Government funding of natural disaster recovery projects should therefore heavily favor summer hurricanes and typhoons in the southern US.
+
+To make a more directed recommendation as to which states require more government funding than others, I plotted a US map shaded by the amount of economic hardship faced by each state in response to nautral disasters.
+
+```{r, fig.cap="Economic Hardship Felt by Each US State Due to Natural Disasters. Darker shading represents more hardship."}
+values <- tapply(KeepStormData$TOTALDMG, KeepStormData$STATE, sum, na.rm = TRUE)
+values <- values[!is.na(values)]
+values <- values/max(values)
+values <- 1-values
+names(values) <- state.abb
+tmp <- map('state',plot=FALSE,namesonly=TRUE)
+tmp <- match(gsub('(:.*)','',tmp),tolower(state.name))
+map('state',fill=TRUE,col=grey(values)[tmp])
+```
+
+From this figure it is evident that a majority of the government allocations for storm relief should be sent to Florida and Missouri.
